@@ -17,7 +17,6 @@ ACHIEVEMENT_NAMES = {
     "investor": "Инвестор",
     "whale": "Крипто-кит",
     "streak_3": "На серии",
-    "verified": "Проверенный аккаунт",
     "high_roller": "Хайроллер",
 }
 
@@ -160,23 +159,6 @@ class BotService:
             self._record_transaction(user_id, "daily_bonus", reward, note=f"Серия {streak}")
         unlocked = self._check_achievements(user_id)
         text = f"Ты получил ежедневный бонус: <b>{self._fmt_money(reward)}</b>. Серия: <b>{streak}</b>."
-        if unlocked:
-            text += "\n\n" + self._format_unlocked(unlocked)
-        return text
-
-    def verify_account(self, user_id: int) -> str:
-        user = self._get_user(user_id)
-        if user["is_verified"]:
-            return "Аккаунт уже верифицирован. Лимиты повышены."
-        account_age = self._now() - self._parse_time(user["created_at"])
-        if user["total_wagered"] < 500 and account_age < timedelta(hours=12):
-            raise AppError("Для верификации нужно сделать ставок минимум на 500 или подождать 12 часов с момента регистрации.")
-        self.db.execute(
-            "UPDATE users SET is_verified = 1, updated_at = ? WHERE user_id = ?",
-            (now_iso(), user_id),
-        )
-        unlocked = self._check_achievements(user_id)
-        text = "Аккаунт верифицирован. Доступны повышенные лимиты на переводы и торговлю."
         if unlocked:
             text += "\n\n" + self._format_unlocked(unlocked)
         return text
@@ -538,17 +520,27 @@ class BotService:
         return "\n".join(lines)
 
     def get_stats_text(self, user_id: int) -> str:
+        self._accrue_deposit(user_id)
         self._refresh_market()
         user = self._get_user(user_id)
-        total_capital = user["wallet_balance"] + user["deposit_balance"] + self._portfolio_value(user_id)
+        wallet = float(user["wallet_balance"])
+        deposit = float(user["deposit_balance"])
+        crypto_value = self._portfolio_value(user_id)
+        total_capital = wallet + deposit + crypto_value
+        username = user["username"]
+        handle = f"@{username}" if username else f"id{user['user_id']}"
         return (
-            "👤 <b>Профиль игрока</b>\n"
-            f"• Имя: <b>{self._safe_name(user)}</b>\n"
-            f"• Верификация: <b>{'да' if user['is_verified'] else 'нет'}</b>\n"
-            f"• Сумма ставок: <b>{self._fmt_money(user['total_wagered'])}</b>\n"
-            f"• Выигрыши: <b>{self._fmt_money(user['total_won'])}</b>\n"
-            f"• Серия бонусов: <b>{user['daily_streak']}</b>\n"
-            f"• Общий капитал: <b>{self._fmt_money(total_capital)}</b>"
+            f"╭─── 👤 <b>Профиль игрока</b> ───╮\n"
+            f"│ <b>{self._safe_name(user)}</b>\n"
+            f"│ <i>{handle}</i>\n"
+            f"╰────────────────────────╯\n"
+            f"\n"
+            f"💼 <b>Балансы</b>\n"
+            f"┌ 💵 Валюта:    <b>{self._fmt_money(wallet)}</b>\n"
+            f"├ 🪙 Крипта:    <b>{self._fmt_money(crypto_value)}</b>\n"
+            f"└ 🏦 Депозит:   <b>{self._fmt_money(deposit)}</b>\n"
+            f"\n"
+            f"💎 <b>Общий капитал:</b> <b>{self._fmt_money(total_capital)}</b>"
         )
 
     def get_leaderboard_text(self) -> str:
@@ -789,7 +781,6 @@ class BotService:
             "investor": crypto_value >= 1000,
             "whale": crypto_value >= 5000,
             "streak_3": user["daily_streak"] >= 3,
-            "verified": bool(user["is_verified"]),
             "high_roller": user["total_wagered"] >= 5000 or total_capital >= 20000,
         }
         unlocked = []
@@ -829,10 +820,7 @@ class BotService:
         )
 
     def _transfer_fee_rate(self, user) -> float:
-        fee = 0.03
-        if user["is_verified"]:
-            fee -= 0.01
-        return max(0.01, round(fee, 4))
+        return 0.02
 
     def _get_blackjack_session(self, user_id: int):
         session = self.db.fetchone("SELECT * FROM blackjack_sessions WHERE user_id = ?", (user_id,))

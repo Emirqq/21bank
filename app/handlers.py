@@ -7,7 +7,9 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
+
+from app.config import BASE_DIR
 
 from app.keyboards import (
     admin_keyboard,
@@ -98,15 +100,34 @@ def create_router(service: BotService) -> Router:
     @router.message(CommandStart())
     async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await execute(
-            message,
-            lambda: (
+        try:
+            await ensure_user(message)
+            text = (
                 f"<b>{service.get_bot_name()}</b> — игровой банк нового поколения\n"
                 "Храни валюту, переводи её друзьям, играй в казино и торгуй криптой.\n\n"
                 f"{service.get_balance_text(message.from_user.id)}\n\n"
                 "Нажми кнопку <b>💸 Платежи</b> или <b>🪙 Криптовалюта</b> в меню, чтобы начать."
-            ),
-        )
+            )
+            is_private = message.chat.type == "private"
+            markup = main_keyboard(service.is_admin(message.from_user.id)) if is_private and message.from_user else None
+            photo_path = BASE_DIR / "start.png"
+            if photo_path.is_file():
+                await message.answer_photo(
+                    photo=FSInputFile(str(photo_path)),
+                    caption=text,
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                )
+            else:
+                await message.answer(text, parse_mode="HTML", reply_markup=markup)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(
+                message,
+                "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.",
+            )
+            raise
 
     @router.message(Command("help"))
     @router.message(F.text == "ℹ️ Помощь")
@@ -127,10 +148,6 @@ def create_router(service: BotService) -> Router:
     @router.message(F.text == "🎁 Ежедневный бонус")
     async def daily_command(message: Message) -> None:
         await execute(message, lambda: service.claim_daily(message.from_user.id))
-
-    @router.message(Command("verify"))
-    async def verify_command(message: Message) -> None:
-        await execute(message, lambda: service.verify_account(message.from_user.id))
 
     @router.message(Command("opendeposit"))
     async def opendeposit_command(message: Message) -> None:
