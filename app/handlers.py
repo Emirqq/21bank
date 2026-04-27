@@ -275,9 +275,19 @@ def create_router(service: BotService) -> Router:
         markup = blackjack_inline_keyboard() if is_active else blackjack_again_keyboard()
         await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
+    def is_private(message: Message) -> bool:
+        return message.chat.type == "private"
+
+    BLACKJACK_GROUP_BLOCKED = (
+        "Блэкджек доступен только в личке с ботом. Напиши боту в личных сообщениях."
+    )
+
     @router.message(Command("blackjack"))
     @router.message(F.text.lower().startswith("бж "))
     async def blackjack_command(message: Message) -> None:
+        if not is_private(message):
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
         try:
             await ensure_user(message)
             args = split_args(message)
@@ -294,6 +304,9 @@ def create_router(service: BotService) -> Router:
     @router.message(Command("hit"))
     @router.message(F.text.lower().in_({"еще", "ещё", "хит"}))
     async def hit_command(message: Message) -> None:
+        if not is_private(message):
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
         try:
             await ensure_user(message)
             text = service.blackjack_hit(message.from_user.id)
@@ -307,6 +320,9 @@ def create_router(service: BotService) -> Router:
     @router.message(Command("stand"))
     @router.message(F.text.lower().in_({"хватит", "пас", "стенд", "стэнд"}))
     async def stand_command(message: Message) -> None:
+        if not is_private(message):
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
         try:
             await ensure_user(message)
             text = service.blackjack_stand(message.from_user.id)
@@ -323,6 +339,9 @@ def create_router(service: BotService) -> Router:
         user = callback.from_user
         message = callback.message
         if user is None or message is None:
+            return
+        if message.chat.type != "private":
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
             return
         try:
             service.ensure_user(user_id=user.id, username=user.username, display_name=user.full_name)
@@ -345,6 +364,9 @@ def create_router(service: BotService) -> Router:
         user = callback.from_user
         message = callback.message
         if user is None or message is None:
+            return
+        if message.chat.type != "private":
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
             return
         try:
             service.ensure_user(user_id=user.id, username=user.username, display_name=user.full_name)

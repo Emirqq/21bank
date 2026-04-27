@@ -98,10 +98,16 @@ class BotService:
             "/top — топ по капиталу\n"
             "/contests — конкурсы\n\n"
             "👥 <b>В групповом чате</b>\n"
-            "/me — мой профиль\n"
-            "/pay @username сумма — перевод\n"
-            "/top — топ игроков\n"
-            "/slots ставка, /roulette ставка цвет, /blackjack ставка"
+            "Можно писать командами или короткими словами:\n"
+            "• <code>/me</code> или <code>я</code> — твой баланс (счёт, депозит, крипта)\n"
+            "• <code>/balance</code> — то же самое\n"
+            "• <code>/top</code> — топ игроков по капиталу\n"
+            "• <code>/pay @user сумма</code> или <code>перевод @user сумма</code> — перевод\n"
+            "• <code>/slots 100</code> или <code>слоты 100</code> — слоты\n"
+            "• <code>/roulette 50 red</code> или <code>ролл 50 red</code> — рулетка\n"
+            "• <code>/daily</code> — ежедневный бонус\n"
+            "• <code>/market</code> — курсы крипты\n\n"
+            "⚠️ <b>Блэкджек</b> доступен только в личке с ботом."
         )
 
     def get_bank_overview(self, user_id: int) -> str:
