@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from inspect import isawaitable
 from typing import Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
@@ -112,14 +115,23 @@ def create_router(service: BotService) -> Router:
             markup = main_keyboard(service.is_admin(message.from_user.id)) if is_private and message.from_user else None
             photo_path = BASE_DIR / "start.png"
             if photo_path.is_file():
-                await message.answer_photo(
-                    photo=FSInputFile(str(photo_path)),
-                    caption=text,
-                    parse_mode="HTML",
-                    reply_markup=markup,
-                )
+                try:
+                    if len(text) <= 1024:
+                        await message.answer_photo(
+                            photo=FSInputFile(str(photo_path)),
+                            caption=text,
+                            parse_mode="HTML",
+                            reply_markup=markup,
+                        )
+                    else:
+                        await message.answer_photo(photo=FSInputFile(str(photo_path)))
+                        await message.answer(text, parse_mode="HTML", reply_markup=markup)
+                    return
+                except Exception:
+                    logger.exception("Failed to send start.png from %s, falling back to text", photo_path)
             else:
-                await message.answer(text, parse_mode="HTML", reply_markup=markup)
+                logger.warning("start.png not found at %s", photo_path)
+            await message.answer(text, parse_mode="HTML", reply_markup=markup)
         except AppError as error:
             await reply(message, f"<b>Ошибка</b>\n{error}")
         except Exception:

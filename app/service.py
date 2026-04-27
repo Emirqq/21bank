@@ -122,15 +122,37 @@ class BotService:
         self._accrue_deposit(user_id)
         self._refresh_market()
         user = self._get_user(user_id)
-        portfolio_value = self._portfolio_value(user_id)
-        total = user["wallet_balance"] + user["deposit_balance"] + portfolio_value
-        return (
-            "💳 <b>Баланс</b>\n"
-            f"• Счёт: <b>{self._fmt_money(user['wallet_balance'])}</b>\n"
-            f"• Депозит: <b>{self._fmt_money(user['deposit_balance'])}</b>\n"
-            f"• Криптопортфель: <b>{self._fmt_money(portfolio_value)}</b>\n"
-            f"• Итого капитал: <b>{self._fmt_money(total)}</b>"
+        wallet = float(user["wallet_balance"])
+        deposit = float(user["deposit_balance"])
+        holdings = self.db.fetchall(
+            """
+            SELECT p.symbol, p.amount, m.price
+            FROM portfolios p
+            JOIN market m ON m.symbol = p.symbol
+            WHERE p.user_id = ?
+            ORDER BY p.symbol
+            """,
+            (user_id,),
         )
+        portfolio_value = 0.0
+        crypto_lines: list[str] = []
+        for item in holdings:
+            amount = float(item["amount"])
+            value = amount * float(item["price"])
+            portfolio_value += value
+            crypto_lines.append(
+                f"   — {item['symbol']}: <b>{self._fmt_crypto(amount)}</b> (<i>{self._fmt_money(value)}</i>)"
+            )
+        total = wallet + deposit + portfolio_value
+        lines = [
+            "💳 <b>Баланс</b>",
+            f"• Счёт: <b>{self._fmt_money(wallet)}</b>",
+            f"• Депозит: <b>{self._fmt_money(deposit)}</b>",
+            f"• Криптопортфель: <b>{self._fmt_money(portfolio_value)}</b>",
+        ]
+        lines.extend(crypto_lines)
+        lines.append(f"• Итого капитал: <b>{self._fmt_money(total)}</b>")
+        return "\n".join(lines)
 
     def claim_daily(self, user_id: int) -> str:
         user = self._get_user(user_id)
@@ -520,28 +542,7 @@ class BotService:
         return "\n".join(lines)
 
     def get_stats_text(self, user_id: int) -> str:
-        self._accrue_deposit(user_id)
-        self._refresh_market()
-        user = self._get_user(user_id)
-        wallet = float(user["wallet_balance"])
-        deposit = float(user["deposit_balance"])
-        crypto_value = self._portfolio_value(user_id)
-        total_capital = wallet + deposit + crypto_value
-        username = user["username"]
-        handle = f"@{username}" if username else f"id{user['user_id']}"
-        return (
-            f"╭─── 👤 <b>Профиль игрока</b> ───╮\n"
-            f"│ <b>{self._safe_name(user)}</b>\n"
-            f"│ <i>{handle}</i>\n"
-            f"╰────────────────────────╯\n"
-            f"\n"
-            f"💼 <b>Балансы</b>\n"
-            f"┌ 💵 Валюта:    <b>{self._fmt_money(wallet)}</b>\n"
-            f"├ 🪙 Крипта:    <b>{self._fmt_money(crypto_value)}</b>\n"
-            f"└ 🏦 Депозит:   <b>{self._fmt_money(deposit)}</b>\n"
-            f"\n"
-            f"💎 <b>Общий капитал:</b> <b>{self._fmt_money(total_capital)}</b>"
-        )
+        return self.get_balance_text(user_id)
 
     def get_leaderboard_text(self) -> str:
         self._refresh_market()
@@ -869,6 +870,10 @@ class BotService:
 
     def _fmt_money(self, amount: float) -> str:
         return f"{amount:,.2f}".replace(",", " ")
+
+    def _fmt_crypto(self, amount: float) -> str:
+        text = f"{amount:.8f}".rstrip("0").rstrip(".")
+        return text or "0"
 
     def _safe_name(self, user) -> str:
         return user["display_name"] or user["username"] or str(user["user_id"])
