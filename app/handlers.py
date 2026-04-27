@@ -1,17 +1,27 @@
 from __future__ import annotations
 
+import logging
 from inspect import isawaitable
 from typing import Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
+
+from app.config import BASE_DIR
 
 from app.keyboards import (
+    BLACKJACK_AGAIN_CB,
+    BLACKJACK_HIT_CB,
+    BLACKJACK_STAND_CB,
     admin_keyboard,
     back_keyboard,
+    blackjack_again_keyboard,
+    blackjack_inline_keyboard,
     casino_keyboard,
     crypto_keyboard,
     main_keyboard,
@@ -98,15 +108,43 @@ def create_router(service: BotService) -> Router:
     @router.message(CommandStart())
     async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
-        await execute(
-            message,
-            lambda: (
+        try:
+            await ensure_user(message)
+            text = (
                 f"<b>{service.get_bot_name()}</b> — игровой банк нового поколения\n"
                 "Храни валюту, переводи её друзьям, играй в казино и торгуй криптой.\n\n"
                 f"{service.get_balance_text(message.from_user.id)}\n\n"
                 "Нажми кнопку <b>💸 Платежи</b> или <b>🪙 Криптовалюта</b> в меню, чтобы начать."
-            ),
-        )
+            )
+            is_private = message.chat.type == "private"
+            markup = main_keyboard(service.is_admin(message.from_user.id)) if is_private and message.from_user else None
+            photo_path = BASE_DIR / "start.png"
+            if photo_path.is_file():
+                try:
+                    if len(text) <= 1024:
+                        await message.answer_photo(
+                            photo=FSInputFile(str(photo_path)),
+                            caption=text,
+                            parse_mode="HTML",
+                            reply_markup=markup,
+                        )
+                    else:
+                        await message.answer_photo(photo=FSInputFile(str(photo_path)))
+                        await message.answer(text, parse_mode="HTML", reply_markup=markup)
+                    return
+                except Exception:
+                    logger.exception("Failed to send start.png from %s, falling back to text", photo_path)
+            else:
+                logger.warning("start.png not found at %s", photo_path)
+            await message.answer(text, parse_mode="HTML", reply_markup=markup)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(
+                message,
+                "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.",
+            )
+            raise
 
     @router.message(Command("help"))
     @router.message(F.text == "ℹ️ Помощь")
@@ -127,10 +165,6 @@ def create_router(service: BotService) -> Router:
     @router.message(F.text == "🎁 Ежедневный бонус")
     async def daily_command(message: Message) -> None:
         await execute(message, lambda: service.claim_daily(message.from_user.id))
-
-    @router.message(Command("verify"))
-    async def verify_command(message: Message) -> None:
-        await execute(message, lambda: service.verify_account(message.from_user.id))
 
     @router.message(Command("opendeposit"))
     async def opendeposit_command(message: Message) -> None:
@@ -224,26 +258,128 @@ def create_router(service: BotService) -> Router:
 
         await execute(message, action)
 
+    SECTION_MENUS = {
+        "payments": (payments_keyboard, "💸 Платежи"),
+        "crypto": (crypto_keyboard, "🪙 Криптовалюта"),
+        "casino": (casino_keyboard, "🎲 Казино"),
+        "admin": (admin_keyboard, "🛠 Админ-панель"),
+    }
+
+    async def enter_prompt(message: Message, state: FSMContext, fsm_state: State, section: str, prompt: str) -> None:
+        await state.set_state(fsm_state)
+        await state.update_data(section=section)
+        await show_menu(message, prompt, back_keyboard())
+
+    async def send_blackjack(message: Message, text: str, user_id: int) -> None:
+        is_active = service.has_blackjack_session(user_id)
+        markup = blackjack_inline_keyboard() if is_active else blackjack_again_keyboard()
+        await message.answer(text, parse_mode="HTML", reply_markup=markup)
+
+    def is_private(message: Message) -> bool:
+        return message.chat.type == "private"
+
+    BLACKJACK_GROUP_BLOCKED = (
+        "Блэкджек доступен только в личке с ботом. Напиши боту в личных сообщениях."
+    )
+
     @router.message(Command("blackjack"))
     @router.message(F.text.lower().startswith("бж "))
     async def blackjack_command(message: Message) -> None:
-        async def action() -> str:
+        if not is_private(message):
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
+        try:
+            await ensure_user(message)
             args = split_args(message)
             if len(args) != 1:
                 raise AppError("Формат: /blackjack ставка")
-            return service.start_blackjack(message.from_user.id, parse_amount(args[0]))
-
-        await execute(message, action)
+            text = service.start_blackjack(message.from_user.id, parse_amount(args[0]))
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.")
+            raise
 
     @router.message(Command("hit"))
     @router.message(F.text.lower().in_({"еще", "ещё", "хит"}))
     async def hit_command(message: Message) -> None:
-        await execute(message, lambda: service.blackjack_hit(message.from_user.id))
+        if not is_private(message):
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
+        try:
+            await ensure_user(message)
+            text = service.blackjack_hit(message.from_user.id)
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.")
+            raise
 
     @router.message(Command("stand"))
     @router.message(F.text.lower().in_({"хватит", "пас", "стенд", "стэнд"}))
     async def stand_command(message: Message) -> None:
-        await execute(message, lambda: service.blackjack_stand(message.from_user.id))
+        if not is_private(message):
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
+        try:
+            await ensure_user(message)
+            text = service.blackjack_stand(message.from_user.id)
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.")
+            raise
+
+    @router.callback_query(F.data.in_({BLACKJACK_HIT_CB, BLACKJACK_STAND_CB}))
+    async def blackjack_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        user = callback.from_user
+        message = callback.message
+        if user is None or message is None:
+            return
+        if message.chat.type != "private":
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
+        try:
+            service.ensure_user(user_id=user.id, username=user.username, display_name=user.full_name)
+            if callback.data == BLACKJACK_HIT_CB:
+                text = service.blackjack_hit(user.id)
+            else:
+                text = service.blackjack_stand(user.id)
+        except AppError as error:
+            await message.answer(f"<b>Ошибка</b>\n{error}", parse_mode="HTML")
+            return
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await send_blackjack(message, text, user.id)
+
+    @router.callback_query(F.data == BLACKJACK_AGAIN_CB)
+    async def blackjack_again_callback(callback: CallbackQuery, state: FSMContext) -> None:
+        await callback.answer()
+        user = callback.from_user
+        message = callback.message
+        if user is None or message is None:
+            return
+        if message.chat.type != "private":
+            await message.answer(BLACKJACK_GROUP_BLOCKED)
+            return
+        try:
+            service.ensure_user(user_id=user.id, username=user.username, display_name=user.full_name)
+        except AppError as error:
+            await message.answer(f"<b>Ошибка</b>\n{error}", parse_mode="HTML")
+            return
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await state.set_state(CasinoStates.blackjack)
+        await state.update_data(section="casino")
+        await message.answer("Введи ставку для блэкджека:", parse_mode="HTML", reply_markup=back_keyboard())
 
     @router.message(Command("achievements"))
     @router.message(F.text == "🏆 Достижения")
@@ -328,16 +464,20 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "⬅️ Назад")
     async def back_button(message: Message, state: FSMContext) -> None:
+        data = await state.get_data()
+        section = data.get("section")
         await state.clear()
-        await execute(message, lambda: "Ты в главном меню.")
+        if section and section in SECTION_MENUS:
+            kb_func, label = SECTION_MENUS[section]
+            await execute(message, lambda: f"<b>{label}</b>", keyboard=kb_func())
+        else:
+            await execute(message, lambda: "Ты в главном меню.")
 
     @router.message(F.text == "💸 Перевод")
     async def payment_transfer(message: Message, state: FSMContext) -> None:
-        await state.set_state(PaymentStates.transfer)
-        await show_menu(
-            message,
+        await enter_prompt(
+            message, state, PaymentStates.transfer, "payments",
             "Введи перевод в формате: <b>user_id сумма</b> или <b>@username сумма</b>.",
-            back_keyboard(),
         )
 
     @router.message(PaymentStates.transfer)
@@ -353,8 +493,7 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "🏦 Открыть депозит")
     async def payment_open_deposit(message: Message, state: FSMContext) -> None:
-        await state.set_state(PaymentStates.open_deposit)
-        await show_menu(message, "Введи сумму депозита:", back_keyboard())
+        await enter_prompt(message, state, PaymentStates.open_deposit, "payments", "Введи сумму депозита:")
 
     @router.message(PaymentStates.open_deposit)
     async def payment_open_deposit_apply(message: Message, state: FSMContext) -> None:
@@ -367,8 +506,7 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "🏦 Закрыть депозит")
     async def payment_close_deposit(message: Message, state: FSMContext) -> None:
-        await state.set_state(PaymentStates.close_deposit)
-        await show_menu(message, "Введи сумму закрытия депозита:", back_keyboard())
+        await enter_prompt(message, state, PaymentStates.close_deposit, "payments", "Введи сумму закрытия депозита:")
 
     @router.message(PaymentStates.close_deposit)
     async def payment_close_deposit_apply(message: Message, state: FSMContext) -> None:
@@ -382,6 +520,7 @@ def create_router(service: BotService) -> Router:
     @router.message(F.text == "🪙 Купить крипту")
     async def crypto_buy(message: Message, state: FSMContext) -> None:
         await state.set_state(CryptoStates.buy)
+        await state.update_data(section="crypto")
         await execute(
             message,
             lambda: (
@@ -406,8 +545,7 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "💰 Продать крипту")
     async def crypto_sell(message: Message, state: FSMContext) -> None:
-        await state.set_state(CryptoStates.sell)
-        await show_menu(message, "Введи продажу: <b>BTC количество</b>.", back_keyboard())
+        await enter_prompt(message, state, CryptoStates.sell, "crypto", "Введи продажу: <b>BTC количество</b>.")
 
     @router.message(CryptoStates.sell)
     async def crypto_sell_apply(message: Message, state: FSMContext) -> None:
@@ -422,8 +560,7 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "🔁 Перевести крипту")
     async def crypto_send(message: Message, state: FSMContext) -> None:
-        await state.set_state(CryptoStates.send)
-        await show_menu(message, "Введи перевод: <b>user_id BTC количество</b>.", back_keyboard())
+        await enter_prompt(message, state, CryptoStates.send, "crypto", "Введи перевод: <b>user_id BTC количество</b>.")
 
     @router.message(CryptoStates.send)
     async def crypto_send_apply(message: Message, state: FSMContext) -> None:
@@ -438,8 +575,7 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "🎡 Рулетка")
     async def casino_roulette(message: Message, state: FSMContext) -> None:
-        await state.set_state(CasinoStates.roulette)
-        await show_menu(message, "Введи ставку и цвет: <b>50 red</b>.", back_keyboard())
+        await enter_prompt(message, state, CasinoStates.roulette, "casino", "Введи ставку и цвет: <b>50 red</b>.")
 
     @router.message(CasinoStates.roulette)
     async def casino_roulette_apply(message: Message, state: FSMContext) -> None:
@@ -454,8 +590,7 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "🎰 Слоты")
     async def casino_slots(message: Message, state: FSMContext) -> None:
-        await state.set_state(CasinoStates.slots)
-        await show_menu(message, "Введи ставку для слотов:", back_keyboard())
+        await enter_prompt(message, state, CasinoStates.slots, "casino", "Введи ставку для слотов:")
 
     @router.message(CasinoStates.slots)
     async def casino_slots_apply(message: Message, state: FSMContext) -> None:
@@ -468,22 +603,25 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "🃏 Блэкджек")
     async def casino_blackjack(message: Message, state: FSMContext) -> None:
-        await state.set_state(CasinoStates.blackjack)
-        await show_menu(message, "Введи ставку для блэкджека:", back_keyboard())
+        await enter_prompt(message, state, CasinoStates.blackjack, "casino", "Введи ставку для блэкджека:")
 
     @router.message(CasinoStates.blackjack)
     async def casino_blackjack_apply(message: Message, state: FSMContext) -> None:
-        await execute(
-            message,
-            lambda: service.start_blackjack(message.from_user.id, parse_amount(message.text or "")),
-            keyboard=casino_keyboard(),
-        )
-        await state.clear()
+        try:
+            await ensure_user(message)
+            text = service.start_blackjack(message.from_user.id, parse_amount(message.text or ""))
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}", keyboard=casino_keyboard())
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.", keyboard=casino_keyboard())
+            raise
+        finally:
+            await state.clear()
 
     @router.message(F.text == "➕ Начислить баланс")
     async def admin_grant_balance(message: Message, state: FSMContext) -> None:
-        await state.set_state(AdminStates.grant_balance)
-        await show_menu(message, "Введи: <b>@username/user_id сумма</b>", back_keyboard())
+        await enter_prompt(message, state, AdminStates.grant_balance, "admin", "Введи: <b>@username/user_id сумма</b>")
 
     @router.message(AdminStates.grant_balance)
     async def admin_grant_balance_apply(message: Message, state: FSMContext) -> None:
@@ -498,8 +636,7 @@ def create_router(service: BotService) -> Router:
 
     @router.message(F.text == "🗑 Обнулить игрока")
     async def admin_reset_assets(message: Message, state: FSMContext) -> None:
-        await state.set_state(AdminStates.reset_assets)
-        await show_menu(message, "Введи <b>@username</b> или <b>user_id</b> игрока для обнуления:", back_keyboard())
+        await enter_prompt(message, state, AdminStates.reset_assets, "admin", "Введи <b>@username</b> или <b>user_id</b> игрока для обнуления:")
 
     @router.message(AdminStates.reset_assets)
     async def admin_reset_assets_apply(message: Message, state: FSMContext) -> None:
