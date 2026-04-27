@@ -67,6 +67,7 @@ def back_keyboard() -> ReplyKeyboardMarkup:
 
 BLACKJACK_HIT_CB = "bj:hit"
 BLACKJACK_STAND_CB = "bj:stand"
+BLACKJACK_AGAIN_CB = "bj:again"
 
 
 def blackjack_inline_keyboard() -> InlineKeyboardMarkup:
@@ -76,5 +77,13 @@ def blackjack_inline_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🃏 Ещё", callback_data=BLACKJACK_HIT_CB),
                 InlineKeyboardButton(text="✋ Хватит", callback_data=BLACKJACK_STAND_CB),
             ]
+        ]
+    )
+
+
+def blackjack_again_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Играть снова", callback_data=BLACKJACK_AGAIN_CB)]
         ]
     )
