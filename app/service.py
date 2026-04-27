@@ -475,7 +475,7 @@ class BotService:
             self._record_transaction(user_id, "blackjack_bet", bet, note="Начало партии")
         if self._score(deck) == 21:
             return self.blackjack_stand(user_id)
-        return self._blackjack_state_text(deck, dealer, hide_dealer=True, extra="Партия началась. Напиши 'еще' (/hit) или 'пас' (/stand).")
+        return self._blackjack_state_text(deck, dealer, hide_dealer=True, extra="Партия началась. Жми «Ещё» или «Хватит».")
 
     def blackjack_hit(self, user_id: int) -> str:
         session = self._get_blackjack_session(user_id)
@@ -495,7 +495,7 @@ class BotService:
             "UPDATE blackjack_sessions SET player_hand = ? WHERE user_id = ?",
             (json.dumps(player_hand), user_id),
         )
-        return self._blackjack_state_text(player_hand, dealer_hand, hide_dealer=True, extra="Карточка взята. Напиши 'еще' или 'пас'.")
+        return self._blackjack_state_text(player_hand, dealer_hand, hide_dealer=True, extra="Карточка взята. Жми «Ещё» или «Хватит».")
 
     def blackjack_stand(self, user_id: int) -> str:
         session = self._get_blackjack_session(user_id)
@@ -822,6 +822,9 @@ class BotService:
 
     def _transfer_fee_rate(self, user) -> float:
         return 0.02
+
+    def has_blackjack_session(self, user_id: int) -> bool:
+        return self.db.fetchone("SELECT 1 FROM blackjack_sessions WHERE user_id = ?", (user_id,)) is not None
 
     def _get_blackjack_session(self, user_id: int):
         session = self.db.fetchone("SELECT * FROM blackjack_sessions WHERE user_id = ?", (user_id,))

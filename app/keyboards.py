@@ -1,4 +1,9 @@
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 
 def main_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
@@ -58,3 +63,18 @@ def admin_keyboard() -> ReplyKeyboardMarkup:
 
 def back_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад")]], resize_keyboard=True)
+
+
+BLACKJACK_HIT_CB = "bj:hit"
+BLACKJACK_STAND_CB = "bj:stand"
+
+
+def blackjack_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🃏 Ещё", callback_data=BLACKJACK_HIT_CB),
+                InlineKeyboardButton(text="✋ Хватит", callback_data=BLACKJACK_STAND_CB),
+            ]
+        ]
+    )

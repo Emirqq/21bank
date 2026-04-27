@@ -10,13 +10,16 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from app.config import BASE_DIR
 
 from app.keyboards import (
+    BLACKJACK_HIT_CB,
+    BLACKJACK_STAND_CB,
     admin_keyboard,
     back_keyboard,
+    blackjack_inline_keyboard,
     casino_keyboard,
     crypto_keyboard,
     main_keyboard,
@@ -253,26 +256,76 @@ def create_router(service: BotService) -> Router:
 
         await execute(message, action)
 
+    async def send_blackjack(message: Message, text: str, user_id: int) -> None:
+        is_active = service.has_blackjack_session(user_id)
+        markup = blackjack_inline_keyboard() if is_active else None
+        await message.answer(text, parse_mode="HTML", reply_markup=markup)
+
     @router.message(Command("blackjack"))
     @router.message(F.text.lower().startswith("бж "))
     async def blackjack_command(message: Message) -> None:
-        async def action() -> str:
+        try:
+            await ensure_user(message)
             args = split_args(message)
             if len(args) != 1:
                 raise AppError("Формат: /blackjack ставка")
-            return service.start_blackjack(message.from_user.id, parse_amount(args[0]))
-
-        await execute(message, action)
+            text = service.start_blackjack(message.from_user.id, parse_amount(args[0]))
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.")
+            raise
 
     @router.message(Command("hit"))
     @router.message(F.text.lower().in_({"еще", "ещё", "хит"}))
     async def hit_command(message: Message) -> None:
-        await execute(message, lambda: service.blackjack_hit(message.from_user.id))
+        try:
+            await ensure_user(message)
+            text = service.blackjack_hit(message.from_user.id)
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.")
+            raise
 
     @router.message(Command("stand"))
     @router.message(F.text.lower().in_({"хватит", "пас", "стенд", "стэнд"}))
     async def stand_command(message: Message) -> None:
-        await execute(message, lambda: service.blackjack_stand(message.from_user.id))
+        try:
+            await ensure_user(message)
+            text = service.blackjack_stand(message.from_user.id)
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}")
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.")
+            raise
+
+    @router.callback_query(F.data.in_({BLACKJACK_HIT_CB, BLACKJACK_STAND_CB}))
+    async def blackjack_callback(callback: CallbackQuery) -> None:
+        await callback.answer()
+        user = callback.from_user
+        message = callback.message
+        if user is None or message is None:
+            return
+        try:
+            service.ensure_user(user_id=user.id, username=user.username, display_name=user.full_name)
+            if callback.data == BLACKJACK_HIT_CB:
+                text = service.blackjack_hit(user.id)
+            else:
+                text = service.blackjack_stand(user.id)
+        except AppError as error:
+            await message.answer(f"<b>Ошибка</b>\n{error}", parse_mode="HTML")
+            return
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        is_active = service.has_blackjack_session(user.id)
+        markup = blackjack_inline_keyboard() if is_active else None
+        await message.answer(text, parse_mode="HTML", reply_markup=markup)
 
     @router.message(Command("achievements"))
     @router.message(F.text == "🏆 Достижения")
@@ -502,12 +555,17 @@ def create_router(service: BotService) -> Router:
 
     @router.message(CasinoStates.blackjack)
     async def casino_blackjack_apply(message: Message, state: FSMContext) -> None:
-        await execute(
-            message,
-            lambda: service.start_blackjack(message.from_user.id, parse_amount(message.text or "")),
-            keyboard=casino_keyboard(),
-        )
-        await state.clear()
+        try:
+            await ensure_user(message)
+            text = service.start_blackjack(message.from_user.id, parse_amount(message.text or ""))
+            await send_blackjack(message, text, message.from_user.id)
+        except AppError as error:
+            await reply(message, f"<b>Ошибка</b>\n{error}", keyboard=casino_keyboard())
+        except Exception:
+            await reply(message, "<b>Ошибка</b>\nПроизошёл внутренний сбой. Проверь логи приложения.", keyboard=casino_keyboard())
+            raise
+        finally:
+            await state.clear()
 
     @router.message(F.text == "➕ Начислить баланс")
     async def admin_grant_balance(message: Message, state: FSMContext) -> None:
